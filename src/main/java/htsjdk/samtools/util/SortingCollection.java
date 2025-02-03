@@ -40,7 +40,9 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Queue;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Collection to which many records can be added.  After all records are added, the collection can be
@@ -99,36 +101,36 @@ public class SortingCollection<T> implements Iterable<T> {
     /**
      * Directories where files of sorted records go.
      */
-    private final Path[] tmpDirs;
+    protected final Path[] tmpDirs;
 
     /**
      * Used to write records to file, and used as a prototype to create codecs for reading.
      */
-    private final SortingCollection.Codec<T> codec;
+    protected final SortingCollection.Codec<T> codec;
 
     /**
      * For sorting, both when spilling records to file, and merge sorting.
      */
-    private final Comparator<T> comparator;
-    private final int maxRecordsInRam;
-    private int numRecordsInRam = 0;
-    private T[] ramRecords;
-    private boolean iterationStarted = false;
-    private boolean doneAdding = false;
+    protected final Comparator<T> comparator;
+    protected final int maxRecordsInRam;
+    protected int numRecordsInRam = 0;
+    protected T[] ramRecords;
+    protected boolean iterationStarted = false;
+    protected boolean doneAdding = false;
 
     /**
      * Set to true when all temp files have been cleaned up
      */
-    private boolean cleanedUp = false;
+    protected boolean cleanedUp = false;
 
     /**
      * List of files in tmpDir containing sorted records
      */
-    private final List<Path> files = new ArrayList<>();
+    protected final Queue<Path> files = new ConcurrentLinkedQueue<>();
 
-    private boolean destructiveIteration = true;
+    protected boolean destructiveIteration = true;
 
-    private final TempStreamFactory tempStreamFactory = new TempStreamFactory();
+    protected final TempStreamFactory tempStreamFactory = new TempStreamFactory();
 
     private final boolean printRecordSizeSampling;
 
@@ -142,9 +144,9 @@ public class SortingCollection<T> implements Iterable<T> {
      * @param printRecordSizeSampling If true record size will be sampled and output at DEBUG log level
      * @param tmpDir          Where to write files of records that will not fit in RAM
      */
-    private SortingCollection(final Class<T> componentType, final SortingCollection.Codec<T> codec,
+    protected SortingCollection(final Class<T> componentType, final SortingCollection.Codec<T> codec,
                               final Comparator<T> comparator, final int maxRecordsInRam,
-                              final boolean printRecordSizeSampling, final Path... tmpDir) {
+                               final Path... tmpDir) {
         if (maxRecordsInRam <= 0) {
             throw new IllegalArgumentException("maxRecordsInRam must be > 0");
         }
@@ -160,7 +162,8 @@ public class SortingCollection<T> implements Iterable<T> {
         @SuppressWarnings("unchecked")
         T[] ramRecords = (T[]) Array.newInstance(componentType, maxRecordsInRam);
         this.ramRecords = ramRecords;
-        this.printRecordSizeSampling = printRecordSizeSampling;
+        // this.printRecordSizeSampling = printRecordSizeSampling;
+         this.printRecordSizeSampling = false;
     }
 
     public void add(final T rec) {
@@ -179,7 +182,7 @@ public class SortingCollection<T> implements Iterable<T> {
                 startMem = Runtime.getRuntime().freeMemory();
             }
 
-            spillToDisk();
+            performSpillToDisk();
 
             if (printRecordSizeSampling) {
                 //Garbage collect again and get free memory
@@ -196,6 +199,10 @@ public class SortingCollection<T> implements Iterable<T> {
         ramRecords[numRecordsInRam++] = rec;
     }
 
+    void performSpillToDisk() {
+        defaultSpillToDisk();
+    }
+
     /**
      * This method can be called after caller is done adding to collection, in order to possibly free
      * up memory.  If iterator() is called immediately after caller is done adding, this is not necessary,
@@ -210,17 +217,22 @@ public class SortingCollection<T> implements Iterable<T> {
         }
 
         doneAdding = true;
+        finish();
 
         if (this.files.isEmpty()) {
             return;
         }
 
         if (this.numRecordsInRam > 0) {
-            spillToDisk();
+            defaultSpillToDisk();
         }
 
         // Facilitate GC
         this.ramRecords = null;
+    }
+
+    void finish() {
+        // hook to be overriden, do nothing here
     }
 
     /**
@@ -242,29 +254,57 @@ public class SortingCollection<T> implements Iterable<T> {
     /**
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
-    public void spillToDisk() {
+    // public void defaultSpillToDisk() {
+    //     try {
+    //         Arrays.parallelSort(this.ramRecords, 0, this.numRecordsInRam, this.comparator);
+
+    //         final Path f = newTempFile();
+    //         try (OutputStream os
+    //                      = tempStreamFactory.wrapTempOutputStream(Files.newOutputStream(f), Defaults.BUFFER_SIZE)) {
+    //             this.codec.setOutputStream(os);
+    //             for (int i = 0; i < this.numRecordsInRam; ++i) {
+    //                 this.codec.encode(ramRecords[i]);
+    //                 // Facilitate GC
+    //                 this.ramRecords[i] = null;
+    //             }
+    //             os.flush();
+    //         } catch (RuntimeIOException ex) {
+    //             throw new RuntimeIOException("Problem writing temporary file " + f.toUri() +
+    //                     ".  Try setting TMP_DIR to a file system with lots of space.", ex);
+    //         }
+
+    //         this.numRecordsInRam = 0;
+    //         this.files.add(f);
+    //     } catch (IOException e) {
+    //         throw new RuntimeIOException(e);
+    //     }
+    // }
+    protected void defaultSpillToDisk() {
+        Arrays.parallelSort(this.ramRecords, 0, this.numRecordsInRam, this.comparator);
+        spill(this.ramRecords, this.numRecordsInRam, this.codec);
+        numRecordsInRam = 0;
+    }
+
+    void spill(T[] buffRamRecords, int buffNumRecordsInRam, Codec<T> codec) {
         try {
-            Arrays.parallelSort(this.ramRecords, 0, this.numRecordsInRam, this.comparator);
-
             final Path f = newTempFile();
-            try (OutputStream os
-                         = tempStreamFactory.wrapTempOutputStream(Files.newOutputStream(f), Defaults.BUFFER_SIZE)) {
-                this.codec.setOutputStream(os);
-                for (int i = 0; i < this.numRecordsInRam; ++i) {
-                    this.codec.encode(ramRecords[i]);
-                    // Facilitate GC
-                    this.ramRecords[i] = null;
-                }
-                os.flush();
-            } catch (RuntimeIOException ex) {
-                throw new RuntimeIOException("Problem writing temporary file " + f.toUri() +
-                        ".  Try setting TMP_DIR to a file system with lots of space.", ex);
-            }
+            OutputStream os = null;
 
-            this.numRecordsInRam = 0;
+                os = tempStreamFactory.wrapTempOutputStream(
+                    Files.newOutputStream(f), Defaults.BUFFER_SIZE);
+                codec.setOutputStream(os);
+                for (int i = 0; i < buffNumRecordsInRam; ++i) {
+                    codec.encode(buffRamRecords[i]);
+                    // Facilitate GC
+                    buffRamRecords[i] = null;
+                }
+
+                os.flush();
+                
             this.files.add(f);
         } catch (IOException e) {
             throw new RuntimeIOException(e);
+
         }
     }
 
@@ -323,7 +363,17 @@ public class SortingCollection<T> implements Iterable<T> {
                                                        final Comparator<T> comparator,
                                                        final int maxRecordsInRAM,
                                                        final File... tmpDir) {
-        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, false, Arrays.stream(tmpDir).map(File::toPath).toArray(Path[]::new));
+
+    final Path tmpDirp = Path.of(System.getProperty("java.io.tmpdir"));
+    if (Defaults.SORTING_COLLECTION_THREADS > 0) {
+            return new AsyncWriteSortingCollection<T>(componentType, codec,
+                    comparator, maxRecordsInRAM,tmpDirp);
+        } else {
+            
+            return new SortingCollection<>(componentType, codec, comparator,
+                    maxRecordsInRAM,tmpDirp);
+        }
+        // return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM,  Arrays.stream(tmpDir).map(File::toPath).toArray(Path[]::new));
 
     }
 
@@ -347,7 +397,6 @@ public class SortingCollection<T> implements Iterable<T> {
                 codec,
                 comparator,
                 maxRecordsInRAM,
-                false,
                 tmpDirs.stream().map(File::toPath).toArray(Path[]::new));
 
     }
@@ -367,7 +416,7 @@ public class SortingCollection<T> implements Iterable<T> {
                                                        final int maxRecordsInRAM,
                                                        final boolean printRecordSizeSampling) {
         final Path tmpDir = Paths.get(System.getProperty("java.io.tmpdir"));
-        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, printRecordSizeSampling, tmpDir);
+        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM,  tmpDir);
     }
 
     /**
@@ -386,7 +435,7 @@ public class SortingCollection<T> implements Iterable<T> {
                                                        final int maxRecordsInRAM,
                                                        final boolean printRecordSizeSampling,
                                                        final Path... tmpDir) {
-        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, printRecordSizeSampling, tmpDir);
+        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, tmpDir);
     }
 
     /**
@@ -402,7 +451,7 @@ public class SortingCollection<T> implements Iterable<T> {
                                                        final Comparator<T> comparator,
                                                        final int maxRecordsInRAM) {
         final Path tmpDir = Paths.get(System.getProperty("java.io.tmpdir"));
-        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, false, tmpDir);
+        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, tmpDir);
     }
 
     /**
@@ -419,7 +468,8 @@ public class SortingCollection<T> implements Iterable<T> {
                                                        final Comparator<T> comparator,
                                                        final int maxRecordsInRAM,
                                                        final Path... tmpDir) {
-        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM, false, tmpDir);
+        return new SortingCollection<>(componentType, codec, comparator, maxRecordsInRAM,  tmpDir);
+        
     }
 
     /**
@@ -440,7 +490,6 @@ public class SortingCollection<T> implements Iterable<T> {
                 codec,
                 comparator,
                 maxRecordsInRAM,
-                false,
                 tmpDirs.toArray(new Path[tmpDirs.size()]));
     }
 

@@ -21,3 +21,5 @@ src/htsjdk.iml
 
 #japi-compliance-checker
 /compat_reports/
+
+bin/

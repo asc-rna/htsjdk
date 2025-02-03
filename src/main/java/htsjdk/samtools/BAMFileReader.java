@@ -524,7 +524,9 @@ public class BAMFileReader extends SamReader.ReaderImplementation {
                 throw new RuntimeIOException(exc.getMessage(), exc);
             }
         }
-        mCurrentIterator = new BAMFileIterator();
+        BAMFileIterator underLayingCurrentIterator = new BAMFileIterator();
+        mCurrentIterator = new AsyncBufferedIterator<SAMRecord>(underLayingCurrentIterator, Defaults.BUFFER_SIZE);
+
         return mCurrentIterator;
     }
 

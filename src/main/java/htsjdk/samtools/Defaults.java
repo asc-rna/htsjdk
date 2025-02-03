@@ -102,6 +102,8 @@ public class Defaults {
      */
     public static final boolean SRA_LIBRARIES_DOWNLOAD;
 
+    public static final int SORTING_COLLECTION_THREADS;
+
 
     /**
      * The name of the system property that disables snappy.  Default = "snappy.disable".
@@ -138,6 +140,7 @@ public class Defaults {
         CUSTOM_READER_FACTORY = getStringProperty("custom_reader", "");
         SAM_FLAG_FIELD_FORMAT = SamFlagField.valueOf(getStringProperty("sam_flag_field_format", SamFlagField.DECIMAL.name()));
         SRA_LIBRARIES_DOWNLOAD = getBooleanProperty("sra_libraries_download", false);
+        SORTING_COLLECTION_THREADS = getIntProperty("sort_col_threads", 0);
         DISABLE_SNAPPY_COMPRESSOR = getBooleanProperty(DISABLE_SNAPPY_PROPERTY_NAME, false);
         OPTIMISTIC_VCF_4_4 = getBooleanProperty(OPTIMISTIC_VCF_4_4_PROPERTY, false);
     }
@@ -163,6 +166,7 @@ public class Defaults {
         result.put("CUSTOM_READER_FACTORY", CUSTOM_READER_FACTORY);
         result.put("SAM_FLAG_FIELD_FORMAT", SAM_FLAG_FIELD_FORMAT);
         result.put("DISABLE_SNAPPY_COMPRESSOR", DISABLE_SNAPPY_COMPRESSOR);
+        result.put("SORTING_COLLECTION_THREADS", SORTING_COLLECTION_THREADS);
         return Collections.unmodifiableSortedMap(result);
     }
 
